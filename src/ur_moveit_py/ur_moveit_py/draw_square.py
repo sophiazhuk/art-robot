@@ -77,7 +77,7 @@ class DrawSquare(Node):
     def square_waypoints(self, start: Pose) -> list[Pose]:
         """Four corners at constant height and orientation, ending at the start."""
         waypoints = []
-        for dx, dy in [(SIDE, 0.0), (SIDE, SIDE), (0.0, SIDE), (0.0, 0.0)]:
+            for dx, dy in [(-SIDE, 0.0), (-SIDE, -SIDE), (0.0, -SIDE), (0.0, 0.0)]:
             p = copy.deepcopy(start)
             p.position.x += dx
             p.position.y += dy
