@@ -3,3 +3,6 @@
 !.pixi/config.toml
 
 __pycache__/
+build/
+install/
+log/

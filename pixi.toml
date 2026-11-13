@@ -6,11 +6,21 @@ platforms = ["linux-64"]
 version = "0.1.0"
 
 [tasks]
+# clean out old build files
+clean = "rm -rf install/ log/ build/"
+# build our ROS packages
+build = "colcon build --symlink-install"
+# real arm driver, with this arm's factory calibration
 driver = "ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.56.101 headless_mode:=true kinematics_params_file:=$PIXI_PROJECT_ROOT/myconfig.yaml"
-mock = "ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=0.0.0.0 use_mock_hardware:=true launch_dashboard_client:=false kinematics_params_file:=$PIXI_PROJECT_ROOT/myconfig.yaml"
-test = "ros2 launch ur_robot_driver test_scaled_joint_trajectory_controller.launch.py"
-moveit = "ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur3e"
+# Gazebo + MoveIt + RViz
 sim = "ros2 launch ur_simulation_gz ur_sim_moveit.launch.py ur_type:=ur3e"
+# MoveIt + RViz (use with driver for the real arm)
+moveit = "ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur3e"
+# professor's example (MoveItPy)
+control-sim = { cmd = "bash -c 'source install/setup.bash && ros2 launch ur_moveit_py move_arm.launch.py'", depends-on = ["build"] }
+control-hw = { cmd = "bash -c 'source install/setup.bash && ros2 launch ur_moveit_py move_arm.launch.py use_sim_time:=false'", depends-on = ["build"] }
+# straight-line square (needs sim, or driver + moveit, running)
+square = { cmd = "bash -c 'source install/setup.bash && ros2 run ur_moveit_py draw_square'", depends-on = ["build"] }
 
 [dependencies]
 ros-jazzy-desktop = ">=0.11.0,<0.12"
@@ -21,7 +31,7 @@ ros-jazzy-ur-moveit-config = ">=3.7.0,<4"
 ros-jazzy-xacro = ">=2.1.1,<3"
 ros-jazzy-ros-gz = ">=1.0.19,<2"
 colcon-common-extensions = ">=0.3.0,<0.4"
-setuptools = ">=84.1.0,<85"
+setuptools = "<70.0.0"
 ros-jazzy-ur-description = ">=3.5.0,<4"
 ros-jazzy-gz-sim-vendor = ">=0.0.9,<0.0.10"
 ros-jazzy-ros2-control = ">=4.43.0,<5"
