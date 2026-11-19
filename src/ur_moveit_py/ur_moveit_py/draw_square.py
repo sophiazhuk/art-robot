@@ -7,8 +7,14 @@ from rclpy.node import Node
 from rclpy.time import Time
 
 from geometry_msgs.msg import Pose
-from moveit_msgs.action import ExecuteTrajectory
-from moveit_msgs.msg import CollisionObject, PlanningScene
+from moveit_msgs.action import ExecuteTrajectory, MoveGroup
+from moveit_msgs.msg import (
+    CollisionObject,
+    Constraints,
+    JointConstraint,
+    MoveItErrorCodes,
+    PlanningScene,
+)
 from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath
 from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer, TransformListener
@@ -20,6 +26,21 @@ SIDE = 0.08                # square side length, meters
 STEP = 0.005               # Cartesian interpolation step, meters
 SPEED = 0.25               # fraction of planned speed (0.25 = 4x slower)
 
+# Pen-down ready pose: elbow bent, tool pointing straight down.
+# tool0 ends up at about (0.30, 0.13, 0.30) m in base_link, so the square
+# (which moves -x and -y from here) stays well inside the arm's reach.
+# The sim spawns the arm straight up and fully stretched, where no
+# Cartesian square is plannable, so we always move here first.
+READY_JOINTS = {
+    "shoulder_pan_joint": 0.0,
+    "shoulder_lift_joint": -1.57,
+    "elbow_joint": 1.57,
+    "wrist_1_joint": -1.57,
+    "wrist_2_joint": -1.57,
+    "wrist_3_joint": 0.0,
+}
+JOINT_TOL = 0.01           # rad, tolerance on each ready-pose joint
+
 
 class DrawSquare(Node):
     def __init__(self):
@@ -29,6 +50,7 @@ class DrawSquare(Node):
         self.scene_client = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
         self.cartesian_client = self.create_client(GetCartesianPath, "/compute_cartesian_path")
         self.execute_client = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
+        self.move_group_client = ActionClient(self, MoveGroup, "/move_action")
 
     def call(self, client, request, name):
         if not client.wait_for_service(timeout_sec=5.0):
@@ -59,6 +81,45 @@ class DrawSquare(Node):
         if not self.call(self.scene_client, req, "/apply_planning_scene").success:
             raise RuntimeError("Failed to add table to planning scene")
 
+    def move_to_ready(self) -> int:
+        """Plan and execute a collision-free joint-space move to READY_JOINTS."""
+        if not self.move_group_client.wait_for_server(timeout_sec=5.0):
+            raise RuntimeError("/move_action unavailable. Is sim (or moveit) running?")
+        goal = MoveGroup.Goal()
+        req = goal.request
+        req.group_name = GROUP
+        req.start_state.is_diff = True   # start from the arm's current state
+        req.num_planning_attempts = 5
+        req.allowed_planning_time = 5.0
+        req.max_velocity_scaling_factor = SPEED
+        req.max_acceleration_scaling_factor = SPEED
+        constraints = Constraints()
+        for name, position in READY_JOINTS.items():
+            jc = JointConstraint()
+            jc.joint_name = name
+            jc.position = position
+            jc.tolerance_above = JOINT_TOL
+            jc.tolerance_below = JOINT_TOL
+            jc.weight = 1.0
+            constraints.joint_constraints.append(jc)
+        req.goal_constraints.append(constraints)
+        goal.planning_options.plan_only = False   # plan and execute
+
+        send_future = self.move_group_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_future)
+        handle = send_future.result()
+        if not handle.accepted:
+            raise RuntimeError("Ready-pose goal rejected")
+        result_future = handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future)
+        return result_future.result().result.error_code.val
+
+    def settle(self, seconds: float = 0.5):
+        """Spin briefly so TF catches up with where the arm actually is."""
+        deadline = self.get_clock().now() + Duration(seconds=seconds)
+        while self.get_clock().now() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+
     def current_pose(self) -> Pose:
         """Where the tool flange is right now."""
         deadline = self.get_clock().now() + Duration(seconds=5.0)
@@ -77,7 +138,7 @@ class DrawSquare(Node):
     def square_waypoints(self, start: Pose) -> list[Pose]:
         """Four corners at constant height and orientation, ending at the start."""
         waypoints = []
-            for dx, dy in [(-SIDE, 0.0), (-SIDE, -SIDE), (0.0, -SIDE), (0.0, 0.0)]:
+        for dx, dy in [(-SIDE, 0.0), (-SIDE, -SIDE), (0.0, -SIDE), (0.0, 0.0)]:
             p = copy.deepcopy(start)
             p.position.x += dx
             p.position.y += dy
@@ -127,6 +188,14 @@ def main():
     log = node.get_logger()
     try:
         node.add_table()
+
+        log.info("Moving to ready pose...")
+        code = node.move_to_ready()
+        if code != MoveItErrorCodes.SUCCESS:
+            log.error(f"Could not reach ready pose, MoveIt error code {code}")
+            return
+        node.settle()
+
         start = node.current_pose()
         log.info(f"Start: x={start.position.x:.3f} y={start.position.y:.3f} z={start.position.z:.3f}")
 
@@ -137,7 +206,7 @@ def main():
             return
 
         code = node.execute(node.slow_down(response.solution, SPEED))
-        if code == 1:  # MoveItErrorCodes.SUCCESS
+        if code == MoveItErrorCodes.SUCCESS:
             log.info("Square complete.")
         else:
             log.error(f"Execution failed, MoveIt error code {code}")
