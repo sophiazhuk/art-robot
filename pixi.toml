@@ -21,6 +21,8 @@ control-sim = { cmd = "bash -c 'source install/setup.bash && ros2 launch ur_move
 control-hw = { cmd = "bash -c 'source install/setup.bash && ros2 launch ur_moveit_py move_arm.launch.py use_sim_time:=false'", depends-on = ["build"] }
 # straight-line square (needs sim, or driver + moveit, running)
 square = { cmd = "bash -c 'source install/setup.bash && ros2 run ur_moveit_py draw_square'", depends-on = ["build"] }
+# circle (needs sim, or driver + moveit, running)
+circle = { cmd = "bash -c 'source install/setup.bash && ros2 run ur_moveit_py draw_circle'", depends-on = ["build"] }
 
 [dependencies]
 ros-jazzy-desktop = ">=0.11.0,<0.12"
