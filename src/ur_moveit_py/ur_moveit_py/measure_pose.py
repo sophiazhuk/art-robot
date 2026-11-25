@@ -31,6 +31,7 @@ def main():
     node = Drawer("measure_pose")
     log = node.get_logger()
     try:
+        node.add_pen()
         log.info("Moving to measured joint pose...")
         code = node.move_to_ready(MEASURED_JOINTS)
         if code != MoveItErrorCodes.SUCCESS:

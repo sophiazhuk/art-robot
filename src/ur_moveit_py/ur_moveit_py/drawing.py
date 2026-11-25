@@ -13,6 +13,7 @@ from rclpy.time import Time
 from geometry_msgs.msg import Pose
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
 from moveit_msgs.msg import (
+    AttachedCollisionObject,
     CollisionObject,
     Constraints,
     JointConstraint,
@@ -22,6 +23,7 @@ from moveit_msgs.msg import (
 from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath
 from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer, TransformListener
+from visualization_msgs.msg import Marker
 
 GROUP = "ur_manipulator"   # UR MoveIt planning group
 BASE = "base_link"         # frame for waypoints and the table
@@ -35,6 +37,15 @@ SPEED = 0.25               # fraction of planned speed (0.25 = 4x slower)
 # this pen tip; plan() converts back to tool0 right before asking MoveIt to
 # plan, since tool0 is the only link MoveIt can do FK/IK for.
 PEN_LENGTH = 0.1524        # 6 inches, in meters
+
+# Pen model for RViz and collision checking (add_pen()). The collision
+# cylinder stops PEN_CLEARANCE short of the real tip: the tip is supposed to
+# touch the table while drawing, and MoveIt would otherwise reject every
+# drawing path as a collision. The exact tip is shown as a red sphere marker
+# instead, which is visual only (RViz: Add > By topic > /visualization_marker).
+PEN_RADIUS = 0.01          # meters; Sharpie + holder, roughly
+PEN_CLEARANCE = 0.01       # meters short of the real tip
+TIP_MARKER_DIAMETER = 0.01 # meters
 
 # Table collision box: a thin slab whose top face sits at TABLE_Z, the real
 # table surface height in base_link. -0.005 is the old guess (table ~ flush
@@ -81,6 +92,7 @@ class Drawer(Node):
         self.cartesian_client = self.create_client(GetCartesianPath, "/compute_cartesian_path")
         self.execute_client = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
         self.move_group_client = ActionClient(self, MoveGroup, "/move_action")
+        self.marker_pub = self.create_publisher(Marker, "/visualization_marker", 10)
 
     def call(self, client, request, name):
         if not client.wait_for_service(timeout_sec=5.0):
@@ -110,6 +122,53 @@ class Drawer(Node):
         req.scene.world.collision_objects.append(table)
         if not self.call(self.scene_client, req, "/apply_planning_scene").success:
             raise RuntimeError("Failed to add table to planning scene")
+
+    def add_pen(self):
+        """Attach the pen to tool0 in the planning scene, and mark its tip.
+
+        The cylinder moves with the arm in RViz and is collision-checked by
+        MoveIt. The tip marker is locked to tool0, so it keeps following the
+        arm in RViz after this program exits.
+        """
+        length = PEN_LENGTH - PEN_CLEARANCE
+        pen = AttachedCollisionObject()
+        pen.link_name = TIP
+        pen.touch_links = [TIP, "wrist_3_link", "flange"]   # holder sits on the flange
+        pen.object.header.frame_id = TIP
+        pen.object.id = "pen"
+        cyl = SolidPrimitive()
+        cyl.type = SolidPrimitive.CYLINDER
+        cyl.dimensions = [length, PEN_RADIUS]   # [height, radius], centered on its pose
+        pose = Pose()
+        pose.position.z = length / 2.0          # base of the pen at tool0, pointing +Z
+        pose.orientation.w = 1.0
+        pen.object.primitives.append(cyl)
+        pen.object.primitive_poses.append(pose)
+        pen.object.operation = CollisionObject.ADD
+
+        req = ApplyPlanningScene.Request()
+        req.scene = PlanningScene()
+        req.scene.is_diff = True
+        req.scene.robot_state.is_diff = True
+        req.scene.robot_state.attached_collision_objects.append(pen)
+        if not self.call(self.scene_client, req, "/apply_planning_scene").success:
+            raise RuntimeError("Failed to attach pen to planning scene")
+
+        tip = Marker()
+        tip.header.frame_id = TIP
+        tip.ns = "pen"
+        tip.id = 0
+        tip.type = Marker.SPHERE
+        tip.action = Marker.ADD
+        tip.frame_locked = True                 # follow tool0 as the arm moves
+        tip.pose.position.z = PEN_LENGTH
+        tip.pose.orientation.w = 1.0
+        tip.scale.x = tip.scale.y = tip.scale.z = TIP_MARKER_DIAMETER
+        tip.color.r, tip.color.a = 1.0, 1.0
+        # Re-published every second so RViz picks it up whenever its Marker
+        # display subscribes; lifetime 0 keeps it shown after we exit.
+        self.create_timer(1.0, lambda: self.marker_pub.publish(tip))
+        self.marker_pub.publish(tip)
 
     def move_to_ready(self, joints: dict[str, float] = READY_JOINTS) -> int:
         """Plan and execute a collision-free joint-space move to `joints`."""
@@ -214,6 +273,7 @@ def draw(node_name: str, make_waypoints, label: str):
     log = node.get_logger()
     try:
         node.add_table()
+        node.add_pen()
 
         log.info("Moving to ready pose...")
         code = node.move_to_ready()
