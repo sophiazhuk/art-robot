@@ -41,6 +41,16 @@ pixi run square
 7. Stop with `Ctrl+C` in each terminal.
 On macOS, install XQuartz, skip steps 1 and the `$env:DISPLAY` line, and use the same `ssh -Y` command.
 
+### See the pen in RViz
+
+`square`, `circle` and `measure_pose` attach the pen to the arm in MoveIt, so it shows in RViz as a cylinder on the end of the arm (not in Gazebo). The cylinder stops 1 cm short of the real tip so that MoveIt lets the tip touch the table; a red sphere marks the exact tip. The sphere needs a one-time RViz setup:
+
+1. In RViz, click **Add**, choose **By display type → rviz_default_plugins → Marker**, then **OK**.
+2. Expand the new **Marker** display, double-click the empty value next to **Topic**, type `/visualization_marker` and press Enter.
+3. **File → Save Config** so it's there next time.
+
+The display shows an error or warning until one of those commands is running; after that the sphere stays on the arm. Pen size is set by `PEN_LENGTH`, `PEN_RADIUS` and `PEN_CLEARANCE` in `src/ur_moveit_py/ur_moveit_py/drawing.py`.
+
 ### Run on the arm in the robot lab
   
 1. Log into the lab computer connected to the arm. Open three terminals. In each:
