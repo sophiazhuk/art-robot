@@ -23,6 +23,8 @@ control-hw = { cmd = "bash -c 'source install/setup.bash && ros2 launch ur_movei
 square = { cmd = "bash -c 'source install/setup.bash && ros2 run ur_moveit_py draw_square'", depends-on = ["build"] }
 # circle (needs sim, or driver + moveit, running)
 circle = { cmd = "bash -c 'source install/setup.bash && ros2 run ur_moveit_py draw_circle'", depends-on = ["build"] }
+# move to a measured joint pose and print the pen-tip pose (needs sim, or driver + moveit, running)
+measure_pose = { cmd = "bash -c 'source install/setup.bash && ros2 run ur_moveit_py measure_pose'", depends-on = ["build"] }
 
 [dependencies]
 ros-jazzy-desktop = ">=0.11.0,<0.12"

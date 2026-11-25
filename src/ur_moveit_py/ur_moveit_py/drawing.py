@@ -2,6 +2,8 @@
 
 Each shape module only defines its waypoints and calls `draw()`.
 """
+import copy
+
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
@@ -23,13 +25,30 @@ from tf2_ros import Buffer, TransformListener
 
 GROUP = "ur_manipulator"   # UR MoveIt planning group
 BASE = "base_link"         # frame for waypoints and the table
-TIP = "tool0"              # tool flange; becomes the pen tip later
+TIP = "tool0"              # tool flange; the link MoveIt actually knows about
 STEP = 0.005               # Cartesian interpolation step, meters
 SPEED = 0.25               # fraction of planned speed (0.25 = 4x slower)
 
+# Sharpie + holder attached to tool0, measured along tool0's own +Z axis
+# (its pointing direction). MoveIt has no idea this exists, so every pose
+# this file hands out to callers (current_pose(), waypoints) is in terms of
+# this pen tip; plan() converts back to tool0 right before asking MoveIt to
+# plan, since tool0 is the only link MoveIt can do FK/IK for.
+PEN_LENGTH = 0.1524        # 6 inches, in meters
+
+# Table collision box: a thin slab whose top face sits at TABLE_Z, the real
+# table surface height in base_link. -0.005 is the old guess (table ~ flush
+# with the robot's own base plane); replace it with the z printed by
+# `pixi run measure_pose` once you've measured it with the sharpie touching
+# the table.
+TABLE_Z = -0.005           # meters, base_link
+TABLE_THICKNESS = 0.01     # meters; only the top face matters for collision
+
 # Pen-down ready pose: elbow bent, tool pointing straight down.
-# tool0 ends up at about (0.30, 0.13, 0.30) m in base_link. Shapes are drawn
-# from here toward the base (-x), which keeps them well inside the arm's reach.
+# tool0 ends up at about (0.30, 0.13, 0.30) m in base_link, so the pen tip
+# (6 inches further along tool0's +Z, i.e. further down) is at about
+# (0.30, 0.13, 0.15) m. Shapes are drawn from here toward the base (-x),
+# which keeps them well inside the arm's reach.
 # The sim spawns the arm straight up and fully stretched, where no
 # Cartesian shape is plannable, so we always move here first.
 READY_JOINTS = {
@@ -41,6 +60,16 @@ READY_JOINTS = {
     "wrist_3_joint": 0.0,
 }
 JOINT_TOL = 0.01           # rad, tolerance on each ready-pose joint
+
+
+def advance_along_z(pose: Pose, length: float) -> Pose:
+    """Return a copy of `pose` moved `length` meters along its own +Z axis."""
+    x, y, z, w = pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w
+    out = copy.deepcopy(pose)
+    out.position.x += 2.0 * length * (x * z + w * y)
+    out.position.y += 2.0 * length * (y * z - w * x)
+    out.position.z += length * (1.0 - 2.0 * (x * x + y * y))
+    return out
 
 
 class Drawer(Node):
@@ -67,9 +96,9 @@ class Drawer(Node):
         table.id = "table"
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
-        box.dimensions = [2.0, 2.0, 0.01]
+        box.dimensions = [2.0, 2.0, TABLE_THICKNESS]
         pose = Pose()
-        pose.position.z = -0.01
+        pose.position.z = TABLE_Z - TABLE_THICKNESS / 2.0
         pose.orientation.w = 1.0
         table.primitives.append(box)
         table.primitive_poses.append(pose)
@@ -82,8 +111,8 @@ class Drawer(Node):
         if not self.call(self.scene_client, req, "/apply_planning_scene").success:
             raise RuntimeError("Failed to add table to planning scene")
 
-    def move_to_ready(self) -> int:
-        """Plan and execute a collision-free joint-space move to READY_JOINTS."""
+    def move_to_ready(self, joints: dict[str, float] = READY_JOINTS) -> int:
+        """Plan and execute a collision-free joint-space move to `joints`."""
         if not self.move_group_client.wait_for_server(timeout_sec=5.0):
             raise RuntimeError("/move_action unavailable. Is sim (or moveit) running?")
         goal = MoveGroup.Goal()
@@ -95,7 +124,7 @@ class Drawer(Node):
         req.max_velocity_scaling_factor = SPEED
         req.max_acceleration_scaling_factor = SPEED
         constraints = Constraints()
-        for name, position in READY_JOINTS.items():
+        for name, position in joints.items():
             jc = JointConstraint()
             jc.joint_name = name
             jc.position = position
@@ -122,7 +151,7 @@ class Drawer(Node):
             rclpy.spin_once(self, timeout_sec=0.05)
 
     def current_pose(self) -> Pose:
-        """Where the tool flange is right now."""
+        """Where the pen tip is right now (tool0, advanced by PEN_LENGTH)."""
         deadline = self.get_clock().now() + Duration(seconds=5.0)
         while not self.tf_buffer.can_transform(BASE, TIP, Time()):
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -134,15 +163,20 @@ class Drawer(Node):
         pose.position.y = t.transform.translation.y
         pose.position.z = t.transform.translation.z
         pose.orientation = t.transform.rotation
-        return pose
+        return advance_along_z(pose, PEN_LENGTH)
 
     def plan(self, waypoints: list[Pose]):
+        """Plan a Cartesian path for the pen tip through `waypoints`.
+
+        MoveIt only knows about tool0, so each pen-tip waypoint is shifted
+        back by PEN_LENGTH before being sent to /compute_cartesian_path.
+        """
         req = GetCartesianPath.Request()
         req.header.frame_id = BASE
         req.start_state.is_diff = True   # start from the arm's current state
         req.group_name = GROUP
         req.link_name = TIP
-        req.waypoints = waypoints
+        req.waypoints = [advance_along_z(wp, -PEN_LENGTH) for wp in waypoints]
         req.max_step = STEP
         req.avoid_collisions = True
         return self.call(self.cartesian_client, req, "/compute_cartesian_path")

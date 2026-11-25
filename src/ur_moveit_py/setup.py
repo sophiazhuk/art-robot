@@ -27,6 +27,7 @@ setup(
             'move_arm = ur_moveit_py.move_arm:main',
             'draw_square = ur_moveit_py.draw_square:main',
             'draw_circle = ur_moveit_py.draw_circle:main',
+            'measure_pose = ur_moveit_py.measure_pose:main',
         ],
     },
 )
